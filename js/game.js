@@ -101,7 +101,7 @@ function renderGame(g) {
 
       <aside class="game-side">
         <h2>Где купить</h2>
-        <p class="price-disclaimer">Цены — мировые (в основном долларовые), переведены по текущему курсу. Steam и GOG сами устанавливают отдельную цену для региона — она может быть ниже той, что указана здесь.</p>
+        <p class="price-disclaimer">Цены - мировые (в основном долларовые), переведены по текущему курсу. Steam и другие сами устанавливают отдельную цену для региона - она может быть ниже или выше той, что указана здесь.</p>
         <div class="platforms-list">
           ${platforms.length ? platforms.map(platformRow).join("") : `<p style="color:var(--text-muted)">Сейчас нигде не продаётся</p>`}
         </div>
