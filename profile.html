@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge - профиль</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"/>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="logo" href="index.html">Forge</a>
+        <nav class="topnav">
+          <a href="index.html">Каталог</a> <a href="library.html">Библиотека</a>
+          <a href="cart.html">Вишлист</a>
+        </nav>
+        <div class="topbar-actions">
+          <a
+            href="admin.html"
+            class="icon-btn"
+            id="admin-link"
+            style="display: none"
+            >Админка</a
+          >
+          <a href="login.html" class="icon-btn ghost" id="login-btn">Войти</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="profile-wrap">
+      <div class="profile-card">
+        <h2>Профиль</h2>
+        <div class="profile-field">
+          <input type="text" id="display-name-input" placeholder="Имя" />
+          <button class="btn-outline" id="save-name-btn">Сохранить</button>
+        </div>
+        <p id="profile-email" style="margin-top: 10px"></p>
+        <div class="profile-status" id="profile-status"></div>
+      </div>
+
+      <div class="profile-card">
+        <h2>Steam-аккаунт</h2>
+        <p>
+          Вставь ссылку на свой публичный профиль Steam - мы найдём, какие игры
+          из каталога у тебя уже есть, и отметим их «Куплено». Профиль должен
+          быть публичным в настройках приватности Steam.
+        </p>
+        <p id="steam-linked-info" style="display: none; color: #5fd694"></p>
+        <div class="profile-field">
+          <input
+            type="text"
+            id="steam-url"
+            placeholder="https://steamcommunity.com/id/твойник"
+          />
+          <button class="btn-outline" id="steam-link-btn">Привязать</button>
+        </div>
+        <div class="profile-status" id="steam-status"></div>
+      </div>
+
+      <div class="profile-card">
+        <h2>История — мои отзывы</h2>
+        <p id="reviews-empty" style="display: none">
+          Пока не оставил(а) ни одного отзыва.
+        </p>
+        <div
+          id="my-reviews-list"
+          style="display: flex; flex-direction: column; gap: 12px"
+        ></div>
+      </div>
+    </div>
+
+    <script type="module">
+      import { auth, db } from "./js/firebase-config.js";
+      import { watchAuthUI } from "./js/auth.js";
+      import {
+        onAuthStateChanged,
+        updateProfile,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+      import {
+        doc,
+        getDoc,
+        setDoc,
+        updateDoc,
+        deleteDoc,
+        collection,
+        query,
+        where,
+        orderBy,
+        onSnapshot,
+      } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+      const STEAM_LINK_ENDPOINT =
+        "https://enchanting-tarsier-76f9bf.netlify.app/.netlify/functions/link-steam";
+
+      const btn = document.getElementById("steam-link-btn");
+      const status = document.getElementById("steam-status");
+      const linkedInfo = document.getElementById("steam-linked-info");
+      let currentUser = null;
+      let unsubscribeReviews = null;
+
+      const nameInput = document.getElementById("display-name-input");
+      const emailLine = document.getElementById("profile-email");
+      const nameStatus = document.getElementById("profile-status");
+      const reviewsList = document.getElementById("my-reviews-list");
+      const reviewsEmpty = document.getElementById("reviews-empty");
+      const gameTitleCache = new Map();
+
+      async function getGameTitle(gameId) {
+        if (gameTitleCache.has(gameId)) return gameTitleCache.get(gameId);
+        const snap = await getDoc(doc(db, "games", gameId));
+        const title = snap.exists()
+          ? snap.data().title
+          : "Игра удалена из каталога";
+        gameTitleCache.set(gameId, title);
+        return title;
+      }
+
+      function reviewItemHtml(id, r, title) {
+        return `
+      <div class="my-review-item" data-id="${id}">
+        <div class="my-review-head">
+          <span class="my-review-game"><a href="game.html?id=${r.gameId}">${title}</a></span>
+          <span class="my-review-stars">${"★".repeat(r.rating)}${"☆".repeat(5 - r.rating)}</span>
+        </div>
+        <p class="my-review-text">${r.text}</p>
+        <div class="my-review-actions">
+          <button class="edit-btn">Изменить</button>
+          <button class="delete-btn">Удалить</button>
+        </div>
+      </div>`;
+      }
+
+      function watchMyReviews(uid) {
+        if (unsubscribeReviews) unsubscribeReviews();
+        const q = query(
+          collection(db, "reviews"),
+          where("userId", "==", uid),
+          orderBy("createdAt", "desc"),
+        );
+        unsubscribeReviews = onSnapshot(q, async (snap) => {
+          if (snap.empty) {
+            reviewsList.innerHTML = "";
+            reviewsEmpty.style.display = "block";
+            return;
+          }
+          reviewsEmpty.style.display = "none";
+          const items = await Promise.all(
+            snap.docs.map(async (d) => {
+              const r = d.data();
+              const title = await getGameTitle(r.gameId);
+              return reviewItemHtml(d.id, r, title);
+            }),
+          );
+          reviewsList.innerHTML = items.join("");
+        });
+      }
+
+      reviewsList.addEventListener("click", async (e) => {
+        const item = e.target.closest(".my-review-item");
+        if (!item) return;
+        const reviewId = item.dataset.id;
+
+        if (e.target.classList.contains("delete-btn")) {
+          if (!confirm("Удалить отзыв?")) return;
+          await deleteDoc(doc(db, "reviews", reviewId));
+          return;
+        }
+
+        if (e.target.classList.contains("edit-btn")) {
+          const textEl = item.querySelector(".my-review-text");
+          const currentText = textEl.textContent;
+          item.querySelector(".my-review-actions").style.display = "none";
+          textEl.outerHTML = `
+        <div class="my-review-edit">
+          <textarea>${currentText}</textarea>
+          <div class="my-review-actions">
+            <button class="save-edit-btn">Сохранить</button>
+            <button class="cancel-edit-btn">Отмена</button>
+          </div>
+        </div>`;
+          return;
+        }
+
+        if (e.target.classList.contains("save-edit-btn")) {
+          const newText = item.querySelector("textarea").value.trim();
+          if (newText)
+            await updateDoc(doc(db, "reviews", reviewId), { text: newText });
+          return;
+        }
+
+        if (e.target.classList.contains("cancel-edit-btn")) {
+      
+          return;
+        }
+      });
+
+      document
+        .getElementById("save-name-btn")
+        .addEventListener("click", async () => {
+          if (!currentUser) return;
+          const name = nameInput.value.trim();
+          if (!name) return;
+          try {
+            await updateProfile(currentUser, { displayName: name });
+            await setDoc(
+              doc(db, "users", currentUser.uid),
+              { displayName: name },
+              { merge: true },
+            );
+            nameStatus.textContent = "Сохранено";
+            nameStatus.className = "profile-status ok";
+          } catch (e) {
+            nameStatus.textContent = "Не удалось сохранить: " + e.message;
+            nameStatus.className = "profile-status err";
+          }
+        });
+
+      onAuthStateChanged(auth, async (user) => {
+        currentUser = user;
+        if (!user) {
+          linkedInfo.style.display = "none";
+          if (unsubscribeReviews) unsubscribeReviews();
+          return;
+        }
+
+        nameInput.value = user.displayName || "";
+        emailLine.textContent = user.email;
+        watchMyReviews(user.uid);
+
+        const snap = await getDoc(doc(db, "users", user.uid));
+        const data = snap.exists() ? snap.data() : {};
+        if (data.steamLinked) {
+          const count = (data.library || []).length;
+          linkedInfo.textContent = `Уже привязан: SteamID ${data.steamId64} · ${count} игр${count === 1 ? "а" : ""} в библиотеке`;
+          linkedInfo.style.display = "block";
+        } else {
+          linkedInfo.style.display = "none";
+        }
+      });
+
+      btn.addEventListener("click", async () => {
+        status.className = "profile-status";
+        if (!currentUser) {
+          status.textContent = "Сначала войди в аккаунт";
+          status.classList.add("err");
+          return;
+        }
+        const url = document.getElementById("steam-url").value.trim();
+        if (!url) return;
+        status.textContent = "Ищу твои игры...";
+        try {
+          const idToken = await currentUser.getIdToken();
+          const res = await fetch(STEAM_LINK_ENDPOINT, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify({ steamProfileUrl: url }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "ошибка");
+          if (data.warning) {
+            status.textContent =
+              "Профиль приватный или пустой — сделай его публичным в настройках Steam";
+            status.classList.add("err");
+          } else {
+            status.textContent = `Готово: найдено ${data.linkedCount} игр из нашего каталога (всего в библиотеке Steam: ${data.totalOwned})`;
+            status.classList.add("ok");
+            const snap = await getDoc(doc(db, "users", currentUser.uid));
+            const userData = snap.exists() ? snap.data() : {};
+            const count = (userData.library || []).length;
+            linkedInfo.textContent = `Уже привязан: SteamID ${userData.steamId64} · ${count} игр${count === 1 ? "а" : ""} в библиотеке`;
+            linkedInfo.style.display = "block";
+          }
+        } catch (e) {
+          status.textContent = "Не получилось: " + e.message;
+          status.classList.add("err");
+        }
+      });
+
+      watchAuthUI();
+    </script>
+  </body>
+</html>
